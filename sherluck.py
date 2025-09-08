@@ -9,6 +9,8 @@ import requests
 import threading
 import queue
 import time
+import subprocess
+import tempfile
 from typing import List, Dict, Any, Set, Union, Tuple, Generator
 import re
 from datetime import datetime
@@ -70,6 +72,50 @@ class Sherluck:
             'english_words': 'https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt'
         }
 
+        # John the Ripper commands database
+        self.john_commands = {
+            'basic_crack': 'john --wordlist={wordlist} {target}',
+            'incremental': 'john --incremental {target}',
+            'single_crack': 'john --single {target}',
+            'with_rules': 'john --wordlist={wordlist} --rules {target}',
+            'show_cracked': 'john --show {target}',
+            'restore_session': 'john --restore',
+            'specific_format': 'john --format={format} --wordlist={wordlist} {target}',
+            'multi_crack': 'john --wordlist={wordlist} {target1} {target2} {target3}'
+        }
+
+    def run_john_the_ripper(self, command_key: str, wordlist_path: str, target_files: List[str], 
+                           format_type: str = None, rules: bool = False) -> None:
+        """
+        Execute John the Ripper with the specified command
+        """
+        if command_key not in self.john_commands:
+            print(f"[!] Unknown John command: {command_key}")
+            print(f"[+] Available commands: {', '.join(self.john_commands.keys())}")
+            return
+        
+        command_template = self.john_commands[command_key]
+        command = command_template.format(
+            wordlist=wordlist_path,
+            target=' '.join(target_files),
+            format=format_type or 'raw-md5'
+        )
+        
+        if rules and '--rules' not in command:
+            command += ' --rules'
+        
+        print(f"[+] Executing John the Ripper: {command}")
+        
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=3600)
+            print(f"[+] John output:\n{result.stdout}")
+            if result.stderr:
+                print(f"[!] John errors:\n{result.stderr}")
+        except subprocess.TimeoutExpired:
+            print("[!] John the Ripper execution timed out after 1 hour")
+        except Exception as e:
+            print(f"[!] Failed to execute John the Ripper: {e}")
+
     def download_wordlist(self, name: str, url: str, output_dir: str = "wordlists") -> str:
         os.makedirs(output_dir, exist_ok=True)
         filename = os.path.join(output_dir, f"{name}.txt")
@@ -128,10 +174,12 @@ class Sherluck:
             return data
         return [data]
 
-    def generate_leet_variations(self, word: str, max_variations: int = 10) -> Generator[str, None, None]:
+    def generate_realistic_leet_variations(self, word: str, max_variations: int = 8) -> Generator[str, None, None]:
+        """Generate more realistic leet variations with mixed complexity"""
         if not word or len(word) == 0:
             return
-            
+        
+        # Original word variations
         yield word
         yield word.lower()
         yield word.upper()
@@ -139,41 +187,59 @@ class Sherluck:
         
         variations_generated = 4
         
-        if len(word) <= 8 and variations_generated < max_variations:
-            for i in range(min(3, len(word))):
+        # Simple leet substitutions (most common)
+        simple_leet = word.lower()
+        simple_subs = {
+            'a': '@', 'e': '3', 'i': '1', 'o': '0', 's': '$', 't': '7'
+        }
+        
+        for char, replacement in simple_subs.items():
+            if char in simple_leet and variations_generated < max_variations:
+                new_word = simple_leet.replace(char, replacement)
+                yield new_word
+                variations_generated += 1
+                # Also capitalize first letter
+                yield new_word.capitalize()
+                variations_generated += 1
+
+        # Moderate complexity variations
+        if len(word) <= 6 and variations_generated < max_variations:
+            for i in range(min(2, len(word))):
                 char = word[i].lower()
                 if char in self.leet_speak_map:
-                    for replacement in self.leet_speak_map[char]:
+                    for replacement in self.leet_speak_map[char][:2]:  # Limit to 2 replacements per char
                         if variations_generated >= max_variations:
                             return
                         new_word = word[:i] + replacement + word[i+1:]
                         yield new_word
                         variations_generated += 1
 
-    def apply_prefixes_suffixes(self, word: str, max_combinations: int = 15) -> Generator[str, None, None]:
+    def apply_prefixes_suffixes(self, word: str, max_combinations: int = 12) -> Generator[str, None, None]:
         yield word
         count = 1
         
-        for prefix in self.common_prefixes:
-            if count >= max_combinations:
-                return
-            yield f"{prefix}{word}"
-            count += 1
-            
-            if count >= max_combinations:
-                return
-            yield f"{prefix}_{word}"
-            count += 1
-        
-        for suffix in self.common_suffixes:
+        # Common suffixes (most realistic first)
+        for suffix in ['123', '1234', '1', '2', '!', '']:
             if count >= max_combinations:
                 return
             yield f"{word}{suffix}"
             count += 1
-            
+        
+        # Common prefixes
+        for prefix in ['', '!', '1', '2']:
             if count >= max_combinations:
                 return
-            yield f"{word}_{suffix}"
+            yield f"{prefix}{word}"
+            count += 1
+        
+        # Some special combinations
+        special_combos = [f"{word}_{n}" for n in ['123', '2024', '99']] + \
+                        [f"{n}{word}" for n in ['1', '2', '99']]
+        
+        for combo in special_combos:
+            if count >= max_combinations:
+                return
+            yield combo
             count += 1
 
     def extract_dates_from_data(self, data: Dict[str, Any]) -> Set[str]:
@@ -249,26 +315,26 @@ class Sherluck:
             yield (date_component, weights.get('dates', default_weight))
 
     def generate_word_variations(self, word: str, weight: float) -> Generator[Tuple[str, float], None, None]:
-        # Yield original word first
+        # Yield original word variations
         yield (word, weight)
         yield (word.lower(), weight)
         yield (word.upper(), weight * 0.9)
         yield (word.capitalize(), weight * 0.9)
         
-        # Generate leet variations
+        # Generate realistic leet variations
         leet_variations = set()
-        for leet_word in self.generate_leet_variations(word):
+        for leet_word in self.generate_realistic_leet_variations(word):
             leet_variations.add(leet_word)
         
         for leet_word in leet_variations:
             yield (leet_word, weight * 0.8)
             
             # Apply prefixes and suffixes to leet words
-            for ps_word in self.apply_prefixes_suffixes(leet_word, 5):
+            for ps_word in self.apply_prefixes_suffixes(leet_word, 4):
                 yield (ps_word, weight * 0.7)
         
         # Apply prefixes and suffixes to original word
-        for ps_word in self.apply_prefixes_suffixes(word, 5):
+        for ps_word in self.apply_prefixes_suffixes(word, 4):
             yield (ps_word, weight * 0.7)
 
     def generate_combinations(self, keywords: List[Tuple[str, float]], max_combinations: int = 20000) -> Generator[Tuple[str, float], None, None]:
@@ -319,7 +385,7 @@ class Sherluck:
     def add_numeric_patterns(self, words: List[Tuple[str, float]], date_components: Set[str], max_patterns: int = 10000) -> Generator[Tuple[str, float], None, None]:
         numbers = list(date_components)
         
-        common_numbers = [str(i) for i in range(0, 20)]  # Reduced range
+        common_numbers = [str(i) for i in range(0, 20)]
         common_numbers.extend(['123', '1234', '12345', '111', '222', '333'])
         numbers.extend(common_numbers)
         
@@ -335,7 +401,7 @@ class Sherluck:
             if count >= max_patterns:
                 return
                 
-            for number in numbers[:10]:  # Limit numbers per word
+            for number in numbers[:8]:
                 patterns = [
                     f"{word}{number}",
                     f"{number}{word}",
@@ -351,7 +417,7 @@ class Sherluck:
                         if count >= max_patterns:
                             return
 
-    def generate_wordlist(self, data: Dict[str, Any], max_words: int = 100000,  # Reduced default
+    def generate_wordlist(self, data: Dict[str, Any], max_words: int = 100000,
                          min_length: int = 4, max_length: int = 30, 
                          use_threading: bool = True, weights: Dict[str, float] = None,
                          include_common: bool = False, common_wordlists: List[str] = None) -> Generator[str, None, None]:
@@ -368,7 +434,7 @@ class Sherluck:
         variation_count = 0
         for word, weight in keywords_with_weights:
             for variation, var_weight in self.generate_word_variations(word, weight):
-                if variation_count < 50000:  # Limit variations
+                if variation_count < 50000:
                     all_variations.append((variation, var_weight))
                     variation_count += 1
         print(f"[+] Generated {variation_count} variations")
@@ -376,7 +442,7 @@ class Sherluck:
         print("[+] Generating combinations...")
         combinations = []
         combo_count = 0
-        for combo, weight in self.generate_combinations(all_variations, 30000):  # Limit combinations
+        for combo, weight in self.generate_combinations(all_variations, 30000):
             if combo_count < 30000:
                 combinations.append((combo, weight))
                 combo_count += 1
@@ -395,7 +461,7 @@ class Sherluck:
             print("[+] Adding common wordlists...")
             common_count = 0
             for common_word in self.load_external_wordlists(common_wordlists, max_words // 5):
-                if common_word not in combinations and final_count < max_words:
+                if final_count < max_words:
                     yield common_word
                     final_count += 1
                     common_count += 1
@@ -455,7 +521,7 @@ def main():
     parser = argparse.ArgumentParser(description="Sherluck - Advanced Personal Data Wordlist Generator")
     parser.add_argument("-i", "--input", help="Input JSON file with personal data")
     parser.add_argument("-o", "--output", required=True, help="Output wordlist file")
-    parser.add_argument("-m", "--max-words", type=int, default=1000000, help="Maximum words to generate (default: 100000)")
+    parser.add_argument("-m", "--max-words", type=int, default=100000, help="Maximum words to generate (default: 100000)")
     parser.add_argument("--min-length", type=int, default=4)
     parser.add_argument("--max-length", type=int, default=30)
     parser.add_argument("--no-threading", action="store_true", help="Disable multithreading")
@@ -464,6 +530,13 @@ def main():
                        choices=['rockyou', 'common_passwords', 'english_words'],
                        help="Common wordlists to include")
     parser.add_argument("--create-template", action="store_true", help="Create a template JSON file")
+    
+    # John the Ripper integration arguments
+    parser.add_argument("--john", action="store_true", help="Run John the Ripper after generating wordlist")
+    parser.add_argument("--john-command", default="basic_crack", help="John the Ripper command to execute")
+    parser.add_argument("--john-target", nargs='+', help="Target files for John the Ripper")
+    parser.add_argument("--john-format", help="Hash format for John the Ripper")
+    parser.add_argument("--john-rules", action="store_true", help="Use rules with John the Ripper")
     
     args = parser.parse_args()
     
@@ -506,6 +579,20 @@ def main():
     )
     
     generator.save_wordlist(wordlist_generator, args.output, args.max_words)
+    
+    # John the Ripper integration
+    if args.john:
+        if not args.john_target:
+            print("[!] Please specify target files for John the Ripper using --john-target")
+        else:
+            print("[+] Starting John the Ripper...")
+            generator.run_john_the_ripper(
+                command_key=args.john_command,
+                wordlist_path=args.output,
+                target_files=args.john_target,
+                format_type=args.john_format,
+                rules=args.john_rules
+            )
     
     print("[+] Generation complete!")
 
