@@ -94,7 +94,7 @@ Sherluck supports multiple John the Ripper modes:
 - restore_session - Restore interrupted session
 - multi_crack - Crack multiple target files simultaneously
 
-🤝 Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to:
 
